@@ -14,6 +14,29 @@ const {
 }                               = require('../services/appointmentService');
 const { validateCheckin }       = require('../services/geofenceService');
 
+/**
+ * Map a raw DB appointment row (snake_case) to the camelCase shape
+ * expected by the patient app's Appointment model.
+ */
+function mapAppointment(row) {
+  const appointmentDate = row.appointment_date instanceof Date
+    ? row.appointment_date.toISOString().split('T')[0]
+    : String(row.appointment_date).split('T')[0];
+
+  const slotTime = row.slot_time
+    ? String(row.slot_time).substring(0, 5)
+    : null;
+
+  return {
+    id:              String(row.id),
+    appointmentDate,
+    slotTime,
+    tokenNumber:     row.token_number,
+    status:          row.status,
+    bookedAt:        row.created_at,
+  };
+}
+
 // All appointment routes require patient auth
 router.use(authenticatePatient);
 router.use(apiLimiter);
@@ -38,7 +61,8 @@ router.get('/slots', async (req, res, next) => {
     }
 
     const slots = await getAvailableSlots(date);
-    return res.status(200).json({ date, slots });
+    // Return bare array matching patient app model: [{ slotTime, availableCount }]
+    return res.status(200).json(slots);
   } catch (err) {
     next(err);
   }
@@ -74,7 +98,8 @@ router.post('/', async (req, res, next) => {
 
     const appointment = await bookAppointment(req.patientId, date, slotTime);
 
-    return res.status(201).json({ appointment });
+    // Return bare camelCase object matching patient app Appointment model
+    return res.status(201).json(mapAppointment(appointment));
   } catch (err) {
     next(err);
   }
@@ -88,7 +113,8 @@ router.post('/', async (req, res, next) => {
 router.get('/my', async (req, res, next) => {
   try {
     const { upcoming, history } = await getPatientAppointments(req.patientId);
-    return res.status(200).json({ upcoming, history });
+    // Return bare camelCase array (upcoming first, then history) matching patient app model
+    return res.status(200).json([...upcoming, ...history].map(mapAppointment));
   } catch (err) {
     next(err);
   }
