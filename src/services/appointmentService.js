@@ -33,6 +33,65 @@ function assertValidTransition(currentStatus, nextStatus) {
 }
 
 /**
+ * Ensure we have a clinic configuration; create default row if missing.
+ * @returns {Promise<Object>} clinic_config row
+ */
+async function getOrCreateClinicConfig() {
+  const configResult = await query('SELECT * FROM clinic_config LIMIT 1', []);
+  if (configResult.rows.length > 0) {
+    return configResult.rows[0];
+  }
+
+  const defaultConfig = {
+    clinic_name: 'MedicareIQ Clinic',
+    opening_time: '09:00:00',
+    closing_time: '17:00:00',
+    slot_duration_minutes: 15,
+    max_patients_per_slot: 3,
+    geofence_lat: 28.6139000,
+    geofence_lng: 77.2090000,
+    geofence_radius_meters: 200,
+    checkin_window_minutes: 30,
+    is_open: true,
+  };
+
+  await query(
+    `INSERT INTO clinic_config (
+      clinic_name,
+      opening_time,
+      closing_time,
+      slot_duration_minutes,
+      max_patients_per_slot,
+      geofence_lat,
+      geofence_lng,
+      geofence_radius_meters,
+      checkin_window_minutes,
+      is_open
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    ON CONFLICT DO NOTHING`,
+    [
+      defaultConfig.clinic_name,
+      defaultConfig.opening_time,
+      defaultConfig.closing_time,
+      defaultConfig.slot_duration_minutes,
+      defaultConfig.max_patients_per_slot,
+      defaultConfig.geofence_lat,
+      defaultConfig.geofence_lng,
+      defaultConfig.geofence_radius_meters,
+      defaultConfig.checkin_window_minutes,
+      defaultConfig.is_open,
+    ]
+  );
+
+  const created = await query('SELECT * FROM clinic_config LIMIT 1', []);
+  if (created.rows.length === 0) {
+    throw createError('Clinic configuration not found', 500);
+  }
+
+  return created.rows[0];
+}
+
+/**
  * Generate an array of time slots for a given date based on clinic config.
  * @param {Object} config - clinic_config row
  * @param {string} dateStr - 'YYYY-MM-DD'
@@ -64,12 +123,8 @@ function generateTimeSlots(config) {
  * @returns {Promise<Array<{ slotTime: string, availableCount: number }>>}
  */
 async function getAvailableSlots(date) {
-  // Fetch clinic config
-  const configResult = await query('SELECT * FROM clinic_config LIMIT 1', []);
-  if (configResult.rows.length === 0) {
-    throw createError('Clinic configuration not found', 500);
-  }
-  const config = configResult.rows[0];
+  // Fetch clinic config (creates default config if needed)
+  const config = await getOrCreateClinicConfig();
 
   if (!config.is_open) {
     return [];
@@ -132,26 +187,20 @@ async function bookAppointment(patientId, date, slotTime) {
   try {
     await client.query('BEGIN');
 
-    // Lock the slot count row to prevent concurrent bookings
-    // Use advisory lock on date+slot combination
+    // Count existing bookings for this slot (aggregate — no FOR UPDATE)
     const lockResult = await client.query(
       `SELECT COUNT(*) as booked_count
        FROM appointments
        WHERE appointment_date = $1
          AND slot_time = $2
-         AND status NOT IN ('CANCELLED', 'EXPIRED')
-       FOR UPDATE`,
+         AND status NOT IN ('CANCELLED', 'EXPIRED')`,
       [date, slotTime]
     );
 
     const bookedCount = parseInt(lockResult.rows[0].booked_count, 10);
 
     // Verify slot capacity
-    const configResult = await client.query('SELECT * FROM clinic_config LIMIT 1', []);
-    if (configResult.rows.length === 0) {
-      throw createError('Clinic configuration not found', 500);
-    }
-    const config = configResult.rows[0];
+    const config = await getOrCreateClinicConfig();
 
     if (!config.is_open) {
       throw createError('Clinic is currently closed', 400);
@@ -175,12 +224,11 @@ async function bookAppointment(patientId, date, slotTime) {
       throw createError('You already have an active appointment on this date', 409);
     }
 
-    // Assign token number: MAX + 1 for this date (with FOR UPDATE to prevent race)
+    // Assign token number: MAX + 1 for this date (aggregate — no FOR UPDATE)
     const tokenResult = await client.query(
       `SELECT COALESCE(MAX(token_number), 0) + 1 AS next_token
        FROM appointments
-       WHERE appointment_date = $1
-       FOR UPDATE`,
+       WHERE appointment_date = $1`,
       [date]
     );
 
