@@ -7,6 +7,19 @@ const { authenticateStaff, requireRole } = require('../middleware/auth');
 const { apiLimiter }                     = require('../middleware/rateLimiter');
 const { query }                          = require('../db');
 
+// Map raw DB drug row to the camelCase shape the clinic app expects
+function mapDrug(row) {
+  return {
+    id:               String(row.id),
+    name:             row.name,
+    genericName:      row.generic_name || null,
+    form:             row.unit || 'tablet',
+    defaultDose:      null,
+    defaultFrequency: null,
+    isActive:         row.is_active,
+  };
+}
+
 // All drug routes require staff auth
 router.use(authenticateStaff);
 router.use(apiLimiter);
@@ -41,7 +54,7 @@ router.get('/', async (req, res, next) => {
     }
 
     const result = await query(sql, params);
-    return res.status(200).json({ drugs: result.rows, count: result.rowCount });
+    return res.status(200).json(result.rows.map(mapDrug));
   } catch (err) {
     next(err);
   }
@@ -76,7 +89,7 @@ router.post('/', requireRole('doctor', 'admin'), async (req, res, next) => {
       ]
     );
 
-    return res.status(201).json({ drug: result.rows[0] });
+    return res.status(201).json(mapDrug(result.rows[0]));
   } catch (err) {
     next(err);
   }
@@ -138,7 +151,7 @@ router.put('/:id', requireRole('doctor', 'admin'), async (req, res, next) => {
       return res.status(404).json({ error: 'Drug not found or already deactivated' });
     }
 
-    return res.status(200).json({ drug: result.rows[0] });
+    return res.status(200).json(mapDrug(result.rows[0]));
   } catch (err) {
     next(err);
   }

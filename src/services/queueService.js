@@ -124,7 +124,10 @@ async function callNextPatient(staffId) {
  */
 async function skipPatient(appointmentId) {
   const apptResult = await query(
-    `SELECT * FROM appointments WHERE id = $1`,
+    `SELECT a.*, p.name AS patient_name
+     FROM appointments a
+     JOIN patients p ON a.patient_id = p.id
+     WHERE a.id = $1`,
     [appointmentId]
   );
 
@@ -135,15 +138,12 @@ async function skipPatient(appointmentId) {
   const appt = apptResult.rows[0];
   assertValidTransition(appt.status, 'SKIPPED');
 
-  const updateResult = await query(
-    `UPDATE appointments
-     SET status = 'SKIPPED'
-     WHERE id = $1
-     RETURNING *`,
+  await query(
+    `UPDATE appointments SET status = 'SKIPPED' WHERE id = $1`,
     [appointmentId]
   );
 
-  const updated = updateResult.rows[0];
+  const updated = { ...appt, status: 'SKIPPED' };
 
   // Broadcast updated queue to clinic
   const queueSnapshot = await getTodayQueue();

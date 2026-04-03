@@ -11,6 +11,22 @@ const {
   skipPatient,
 }                                        = require('../services/queueService');
 
+// Map a raw queue service row to the camelCase QueuePatient shape the clinic app expects
+function mapQueuePatient(row) {
+  return {
+    appointmentId: String(row.id),
+    tokenNumber:   row.token_number,
+    patientId:     String(row.patient_id),
+    patientName:   row.patient_name || '',
+    age:           null,
+    gender:        null,
+    status:        row.status,
+    slotTime:      row.slot_time ? String(row.slot_time).substring(0, 5) : null,
+    checkedInAt:   row.checked_in_at || null,
+    calledAt:      row.called_at || null,
+  };
+}
+
 // All queue routes require staff authentication
 router.use(authenticateStaff);
 router.use(apiLimiter);
@@ -67,10 +83,7 @@ router.get('/today', async (req, res, next) => {
 router.post('/call-next', requireRole('doctor', 'admin'), async (req, res, next) => {
   try {
     const appointment = await callNextPatient(req.staffId);
-    return res.status(200).json({
-      message: `Token #${appointment.token_number} called`,
-      appointment,
-    });
+    return res.status(200).json(mapQueuePatient(appointment));
   } catch (err) {
     next(err);
   }
@@ -90,10 +103,7 @@ router.post('/skip/:appointmentId', requireRole('doctor', 'admin'), async (req, 
     }
 
     const appointment = await skipPatient(appointmentId);
-    return res.status(200).json({
-      message: `Token #${appointment.token_number} skipped`,
-      appointment,
-    });
+    return res.status(200).json(mapQueuePatient(appointment));
   } catch (err) {
     next(err);
   }

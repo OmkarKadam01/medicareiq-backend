@@ -247,29 +247,24 @@ async function getPendingDispense() {
   for (const row of result.rows) {
     if (!visitsMap.has(row.visit_id)) {
       visitsMap.set(row.visit_id, {
-        visitId:         row.visit_id,
-        appointmentId:   row.appointment_id,
-        patientId:       row.patient_id,
-        patientName:     row.patient_name,
-        patientPhone:    row.patient_phone,
-        tokenNumber:     row.token_number,
-        chiefComplaint:  row.chief_complaint,
-        visitCreatedAt:  row.visit_created_at,
-        prescriptions:   [],
+        visitId:       String(row.visit_id),
+        appointmentId: String(row.appointment_id),
+        patientId:     String(row.patient_id),
+        patientName:   row.patient_name,
+        tokenNumber:   row.token_number,
+        prescriptions: [],
       });
     }
 
     visitsMap.get(row.visit_id).prescriptions.push({
-      id:          row.prescription_id,
-      drugId:      row.drug_id,
-      drugName:    row.drug_name,
-      drugUnit:    row.drug_unit,
-      dosage:      row.dosage,
-      frequency:   row.frequency,
+      id:           String(row.prescription_id),
+      drugId:       String(row.drug_id),
+      drugName:     row.drug_name,
+      dose:         row.dosage,
+      frequency:    row.frequency,
       durationDays: row.duration_days,
-      quantity:    row.quantity,
       instructions: row.instructions,
-      isDispensed: row.is_dispensed,
+      dispensed:    row.is_dispensed,
     });
   }
 

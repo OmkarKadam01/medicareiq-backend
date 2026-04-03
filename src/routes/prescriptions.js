@@ -20,7 +20,8 @@ router.use(apiLimiter);
 router.get('/pending-dispense', requireRole('compounder', 'admin', 'doctor'), async (req, res, next) => {
   try {
     const pendingVisits = await getPendingDispense();
-    return res.status(200).json({ pendingVisits, count: pendingVisits.length });
+    // Return bare array matching clinic app PendingDispenseItem model
+    return res.status(200).json(pendingVisits);
   } catch (err) {
     next(err);
   }
@@ -61,21 +62,35 @@ router.post('/:visitId/dispense', requireRole('compounder', 'admin', 'doctor'), 
 
     const result = await dispenseVisit(visitId, validatedIds);
 
-    if (result.alreadyDispensed) {
-      return res.status(200).json({
-        message: 'All items already dispensed',
-        visitId,
-        fullyDispensed: true,
-      });
-    }
+    // Fetch updated prescription list to return to the clinic app
+    const { query } = require('../db');
+    const prescRows = await query(
+      `SELECT pr.id, pr.drug_id, d.name AS drug_name, pr.dosage AS dose,
+              pr.frequency, pr.duration_days, pr.instructions, pr.is_dispensed AS dispensed
+       FROM prescriptions pr
+       JOIN drugs d ON pr.drug_id = d.id
+       WHERE pr.visit_id = $1
+       ORDER BY pr.id`,
+      [visitId]
+    );
+
+    const prescriptions = prescRows.rows.map(r => ({
+      id:           String(r.id),
+      drugId:       String(r.drug_id),
+      drugName:     r.drug_name,
+      dose:         r.dose,
+      frequency:    r.frequency,
+      durationDays: r.duration_days,
+      instructions: r.instructions,
+      dispensed:    r.dispensed,
+    }));
+
+    const dispensedCount = prescriptions.filter(p => p.dispensed).length;
 
     return res.status(200).json({
-      message: result.fullyDispensed
-        ? 'All medicines dispensed. Visit complete.'
-        : `Dispensed successfully. ${result.remainingCount} item(s) still pending.`,
-      visitId,
-      fullyDispensed:  result.fullyDispensed,
-      remainingCount:  result.remainingCount,
+      visitId:       String(visitId),
+      dispensedCount,
+      prescriptions,
     });
   } catch (err) {
     next(err);
