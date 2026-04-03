@@ -24,7 +24,35 @@ router.use(apiLimiter);
 router.get('/today', async (req, res, next) => {
   try {
     const queue = await getTodayQueue();
-    return res.status(200).json({ queue, count: queue.length });
+
+    // Keep legacy format for old clients and new format for current clients
+    const patients = queue.map(appointment => ({
+      appointmentId: appointment.id.toString(),
+      tokenNumber: appointment.token_number,
+      patientId: appointment.patient_id.toString(),
+      patientName: appointment.patient_name,
+      age: null,
+      gender: null,
+      status: appointment.status,
+      slotTime: appointment.slot_time,
+      checkedInAt: appointment.checked_in_at,
+      calledAt: appointment.called_at
+    }));
+
+    const currentToken = queue
+      .filter(a => ['IN_CONSULTATION', 'DONE'].includes(a.status))
+      .sort((a, b) => b.token_number - a.token_number)[0]?.token_number || null;
+
+    const avgConsultTimeMins = 10;
+
+    return res.status(200).json({
+      date: new Date().toISOString().split('T')[0],
+      patients,
+      currentToken,
+      avgConsultTimeMins,
+      queue: patients,
+      count: patients.length
+    });
   } catch (err) {
     next(err);
   }
