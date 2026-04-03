@@ -48,8 +48,9 @@ async function getOrCreateClinicConfig() {
     closing_time: '17:00:00',
     slot_duration_minutes: 15,
     max_patients_per_slot: 3,
-    geofence_lat: 28.6139000,
-    geofence_lng: 77.2090000,
+    geofence_lat: 19.01325,
+    geofence_lng: 72.8482,
+
     geofence_radius_meters: 200,
     checkin_window_minutes: 30,
     is_open: true,
