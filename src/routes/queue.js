@@ -46,11 +46,11 @@ router.get('/today', async (req, res, next) => {
       appointmentId: appointment.id.toString(),
       tokenNumber: appointment.token_number,
       patientId: appointment.patient_id.toString(),
-      patientName: appointment.patient_name,
+      patientName: appointment.patient_name || 'Unknown',
       age: null,
       gender: null,
       status: appointment.status,
-      slotTime: appointment.slot_time,
+      slotTime: appointment.slot_time || 'Unknown',
       checkedInAt: appointment.checked_in_at,
       calledAt: appointment.called_at
     }));

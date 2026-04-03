@@ -18,13 +18,13 @@ async function getTodayQueue() {
     `SELECT
        a.id,
        a.token_number,
-       a.slot_time,
+       COALESCE(a.slot_time::text, 'Unknown') AS slot_time,
        a.status,
        a.called_at,
        a.completed_at,
        a.notes,
        p.id   AS patient_id,
-       p.name AS patient_name,
+       COALESCE(p.name, 'Unknown') AS patient_name,
        p.phone AS patient_phone
      FROM appointments a
      JOIN patients p ON a.patient_id = p.id
