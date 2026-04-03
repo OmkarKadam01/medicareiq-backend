@@ -1,0 +1,89 @@
+# Dependencies
+node_modules/
+npm-debug.log
+npm-error.log
+yarn-error.log
+yarn-debug.log
+package-lock.json
+yarn.lock
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE and Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Build and dist
+dist/
+build/
+out/
+
+# Temporary files
+tmp/
+temp/
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Firebase
+serviceAccountKey.json
+firebase-config.json
+
+# Testing
+coverage/
+.nyc_output/
+
+# Secrets and sensitive data
+secrets/
+.env.*.local
+config/secrets.js
+
+# OS specific
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Misc
+.cache/
+.parcel-cache
+.next
+out
+.nuxt
+dist
+
+# Local env files
+.env*.local
+
