@@ -258,8 +258,6 @@ router.get('/:id/history', authenticateStaff, apiLimiter, async (req, res, next)
 
     // Return visit array directly (client expects List<VisitHistory>)
     return res.status(200).json(Array.from(visitsMap.values()));
-      history: Array.from(visitsMap.values()),
-    });
   } catch (err) {
     next(err);
   }
