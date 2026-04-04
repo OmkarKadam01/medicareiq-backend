@@ -22,6 +22,7 @@ const patientRoutes      = require('./src/routes/patients');
 const visitRoutes        = require('./src/routes/visits');
 const drugRoutes         = require('./src/routes/drugs');
 const prescriptionRoutes = require('./src/routes/prescriptions');
+const walkinRoutes       = require('./src/routes/walkin');
 
 // Periodic job
 const { expireOldAppointments } = require('./src/services/appointmentService');
@@ -90,6 +91,7 @@ app.use('/patients',      patientRoutes);
 app.use('/visits',        visitRoutes);
 app.use('/drugs',         drugRoutes);
 app.use('/prescriptions', prescriptionRoutes);
+app.use('/walkin',        walkinRoutes);
 
 // 404 handler for unmatched routes
 app.use((req, res) => {

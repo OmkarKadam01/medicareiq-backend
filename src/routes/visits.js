@@ -69,6 +69,67 @@ router.post('/', requireRole('doctor', 'admin'), async (req, res, next) => {
 });
 
 /**
+ * GET /visits/by-appointment/:appointmentId
+ *
+ * Get the visit for a completed appointment (by appointment ID, not visit ID).
+ * Used by doctor to view completed patient details from the queue screen.
+ */
+router.get('/by-appointment/:appointmentId', async (req, res, next) => {
+  try {
+    const appointmentId = parseInt(req.params.appointmentId, 10);
+    if (isNaN(appointmentId)) {
+      return res.status(400).json({ error: 'Invalid appointment ID' });
+    }
+
+    const visitResult = await query(
+      `SELECT v.id, v.appointment_id, v.patient_id, v.chief_complaint,
+              v.doctor_notes, v.created_at
+       FROM visits v
+       WHERE v.appointment_id = $1
+       LIMIT 1`,
+      [appointmentId]
+    );
+
+    if (visitResult.rows.length === 0) {
+      return res.status(404).json({ error: 'No visit found for this appointment' });
+    }
+
+    const v = visitResult.rows[0];
+
+    const prescResult = await query(
+      `SELECT pr.id, pr.drug_id, d.name AS drug_name, pr.dosage,
+              pr.frequency, pr.duration_days, pr.instructions, pr.is_dispensed
+       FROM prescriptions pr
+       JOIN drugs d ON pr.drug_id = d.id
+       WHERE pr.visit_id = $1
+       ORDER BY pr.id ASC`,
+      [v.id]
+    );
+
+    return res.status(200).json({
+      visitId:       String(v.id),
+      appointmentId: String(v.appointment_id),
+      patientId:     String(v.patient_id),
+      chiefComplaint: v.chief_complaint,
+      doctorNotes:   v.doctor_notes,
+      createdAt:     v.created_at,
+      prescriptions: prescResult.rows.map(p => ({
+        id:           String(p.id),
+        drugId:       String(p.drug_id),
+        drugName:     p.drug_name,
+        dose:         p.dosage,
+        frequency:    p.frequency,
+        durationDays: p.duration_days,
+        instructions: p.instructions,
+        dispensed:    p.is_dispensed,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * GET /visits/:visitId
  *
  * Get a visit record with prescriptions.
