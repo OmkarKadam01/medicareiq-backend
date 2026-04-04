@@ -88,8 +88,9 @@ async function createVisit(appointmentId, staffId, { chiefComplaint, doctorNotes
     // Insert prescription lines
     const prescriptions = [];
     for (const med of medicines) {
-      if (!med.drugId || !med.dosage || !med.frequency) {
-        throw createError('Each medicine must have drugId, dosage, and frequency', 400);
+      const dosage = med.dosage || med.dose;
+      if (!med.drugId || !dosage || !med.frequency) {
+        throw createError('Each medicine must have drugId, dosage/dose, and frequency', 400);
       }
 
       // Verify drug exists and is active
@@ -108,7 +109,7 @@ async function createVisit(appointmentId, staffId, { chiefComplaint, doctorNotes
         [
           visit.id,
           med.drugId,
-          med.dosage,
+          dosage,
           med.frequency,
           med.durationDays || null,
           med.quantity     || 1,
