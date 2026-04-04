@@ -212,11 +212,12 @@ async function bookAppointment(patientId, date, slotTime) {
     }
 
     // Check for duplicate booking: patient cannot book same date twice
+    // Exclude all terminal statuses so completed/skipped appointments don't block rebooking
     const duplicateResult = await client.query(
       `SELECT id FROM appointments
        WHERE patient_id = $1
          AND appointment_date = $2
-         AND status NOT IN ('CANCELLED', 'EXPIRED')
+         AND status NOT IN ('CANCELLED', 'EXPIRED', 'DONE', 'DISPENSED', 'SKIPPED')
        LIMIT 1`,
       [patientId, date]
     );
