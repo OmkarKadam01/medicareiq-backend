@@ -39,7 +39,7 @@ router.use(apiLimiter);
  */
 router.get('/today', async (req, res, next) => {
   try {
-    const queue = await getTodayQueue();
+    const queue = await getTodayQueue(req.clinicId);
 
     // Keep legacy format for old clients and new format for current clients
     const patients = queue.map(appointment => ({
@@ -82,7 +82,7 @@ router.get('/today', async (req, res, next) => {
  */
 router.post('/call-next', requireRole('doctor', 'admin'), async (req, res, next) => {
   try {
-    const appointment = await callNextPatient(req.staffId);
+    const appointment = await callNextPatient(req.staffId, req.clinicId);
     return res.status(200).json(mapQueuePatient(appointment));
   } catch (err) {
     next(err);
@@ -102,7 +102,7 @@ router.post('/skip/:appointmentId', requireRole('doctor', 'admin'), async (req, 
       return res.status(400).json({ error: 'Invalid appointment ID' });
     }
 
-    const appointment = await skipPatient(appointmentId);
+    const appointment = await skipPatient(appointmentId, req.clinicId);
     return res.status(200).json(mapQueuePatient(appointment));
   } catch (err) {
     next(err);

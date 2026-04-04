@@ -51,8 +51,9 @@ async function authenticateStaff(req, res, next) {
       return res.status(403).json({ error: 'Token is not a staff token' });
     }
 
-    req.staffId = decoded.id;
+    req.staffId   = decoded.id;
     req.staffRole = decoded.role;
+    req.clinicId  = decoded.clinicId ?? 1;
     next();
   } catch (err) {
     if (err.name === 'TokenExpiredError') {

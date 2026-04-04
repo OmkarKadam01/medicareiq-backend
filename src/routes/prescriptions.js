@@ -19,7 +19,7 @@ router.use(apiLimiter);
  */
 router.get('/pending-dispense', requireRole('compounder', 'admin', 'doctor'), async (req, res, next) => {
   try {
-    const pendingVisits = await getPendingDispense();
+    const pendingVisits = await getPendingDispense(req.clinicId);
     // Return bare array matching clinic app PendingDispenseItem model
     return res.status(200).json(pendingVisits);
   } catch (err) {

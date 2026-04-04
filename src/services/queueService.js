@@ -6,12 +6,12 @@ const { broadcastToClinic, broadcastToPatient } = require('../websocket');
 const { assertValidTransition } = require('./appointmentService');
 
 /**
- * Get the full queue snapshot for today, sorted by token number.
- * Includes patient name and phone for clinic display.
+ * Get the full queue snapshot for today for a specific clinic, sorted by token number.
  *
+ * @param {number} clinicId
  * @returns {Promise<Array>}
  */
-async function getTodayQueue() {
+async function getTodayQueue(clinicId) {
   const today = new Date().toISOString().split('T')[0];
 
   const result = await query(
@@ -23,40 +23,40 @@ async function getTodayQueue() {
        a.called_at,
        a.completed_at,
        a.notes,
+       a.doctor_id,
        p.id   AS patient_id,
        COALESCE(p.name, 'Unknown') AS patient_name,
        p.phone AS patient_phone
      FROM appointments a
      JOIN patients p ON a.patient_id = p.id
-     WHERE a.appointment_date = $1
+     WHERE a.clinic_id = $1
+       AND a.appointment_date = $2
        AND a.status NOT IN ('CANCELLED', 'EXPIRED')
      ORDER BY a.token_number ASC`,
-    [today]
+    [clinicId, today]
   );
 
   return result.rows;
 }
 
 /**
- * Call the next patient into consultation.
- * - Finds the next CHECKED_IN appointment by token order.
- * - Marks current IN_CONSULTATION appointment as DONE.
- * - Sets the next one to IN_CONSULTATION.
- * - Broadcasts events via WebSocket.
+ * Call the next patient into consultation for a given clinic.
  *
- * @param {number} staffId - The doctor's staff ID
+ * @param {number} staffId   - The doctor's staff ID
+ * @param {number} clinicId  - The clinic the doctor belongs to
  * @returns {Promise<Object>} The appointment now IN_CONSULTATION
  */
-async function callNextPatient(staffId) {
+async function callNextPatient(staffId, clinicId) {
   const today = new Date().toISOString().split('T')[0];
 
   // Find currently IN_CONSULTATION appointment (if any) to close it
   const currentResult = await query(
     `SELECT id, patient_id FROM appointments
-     WHERE appointment_date = $1
+     WHERE clinic_id = $1
+       AND appointment_date = $2
        AND status = 'IN_CONSULTATION'
      LIMIT 1`,
-    [today]
+    [clinicId, today]
   );
 
   if (currentResult.rows.length > 0) {
@@ -73,16 +73,17 @@ async function callNextPatient(staffId) {
     console.log(`[Queue] Marked appointment ${current.id} as DONE`);
   }
 
-  // Find next CHECKED_IN patient (lowest token number)
+  // Find next CHECKED_IN patient (lowest token number) for this clinic
   const nextResult = await query(
     `SELECT a.*, p.name AS patient_name, p.phone AS patient_phone, p.fcm_token
      FROM appointments a
      JOIN patients p ON a.patient_id = p.id
-     WHERE a.appointment_date = $1
+     WHERE a.clinic_id = $1
+       AND a.appointment_date = $2
        AND a.status = 'CHECKED_IN'
      ORDER BY a.token_number ASC
      LIMIT 1`,
-    [today]
+    [clinicId, today]
   );
 
   if (nextResult.rows.length === 0) {
@@ -94,41 +95,41 @@ async function callNextPatient(staffId) {
 
   await query(
     `UPDATE appointments
-     SET status = 'IN_CONSULTATION', called_at = NOW()
+     SET status = 'IN_CONSULTATION', called_at = NOW(), doctor_id = $2
      WHERE id = $1`,
-    [next.id]
+    [next.id, staffId]
   );
 
-  // Broadcast to clinic
-  const queueSnapshot = await getTodayQueue();
-  broadcastToClinic('queue:updated', { queue: queueSnapshot });
+  // Broadcast to this clinic only
+  const queueSnapshot = await getTodayQueue(clinicId);
+  broadcastToClinic(clinicId, 'queue:updated', { queue: queueSnapshot });
 
-  // Notify the specific patient they've been called
+  // Notify the specific patient
   broadcastToPatient(next.patient_id, 'patient:called', {
     appointmentId: next.id,
     tokenNumber: next.token_number,
     message: 'Your turn has arrived. Please proceed to the consultation room.',
   });
 
-  console.log(`[Queue] Doctor ${staffId} called patient token #${next.token_number} (appt ${next.id})`);
+  console.log(`[Queue] Doctor ${staffId} (clinic ${clinicId}) called patient token #${next.token_number} (appt ${next.id})`);
 
   return { ...next, status: 'IN_CONSULTATION', called_at: new Date() };
 }
 
 /**
  * Skip a specific patient in the queue.
- * Sets status to SKIPPED and broadcasts queue update.
  *
  * @param {number} appointmentId
+ * @param {number} clinicId
  * @returns {Promise<Object>} Updated appointment
  */
-async function skipPatient(appointmentId) {
+async function skipPatient(appointmentId, clinicId) {
   const apptResult = await query(
     `SELECT a.*, p.name AS patient_name
      FROM appointments a
      JOIN patients p ON a.patient_id = p.id
-     WHERE a.id = $1`,
-    [appointmentId]
+     WHERE a.id = $1 AND a.clinic_id = $2`,
+    [appointmentId, clinicId]
   );
 
   if (apptResult.rows.length === 0) {
@@ -145,43 +146,41 @@ async function skipPatient(appointmentId) {
 
   const updated = { ...appt, status: 'SKIPPED' };
 
-  // Broadcast updated queue to clinic
-  const queueSnapshot = await getTodayQueue();
-  broadcastToClinic('queue:updated', { queue: queueSnapshot });
+  // Broadcast updated queue to this clinic only
+  const queueSnapshot = await getTodayQueue(clinicId);
+  broadcastToClinic(clinicId, 'queue:updated', { queue: queueSnapshot });
 
-  // Notify the skipped patient
   broadcastToPatient(appt.patient_id, 'queue:updated', {
     appointmentId: appt.id,
     status: 'SKIPPED',
     message: 'Your token was skipped. Please check with the receptionist.',
   });
 
-  console.log(`[Queue] Skipped appointment ${appointmentId}`);
+  console.log(`[Queue] Skipped appointment ${appointmentId} (clinic ${clinicId})`);
   return updated;
 }
 
 /**
  * Calculate the rolling average consultation time from the last 5 completed
- * consultations today.
+ * consultations today for a specific clinic.
  *
- * - If fewer than 5 completed consultations today, returns default 10 minutes.
- * - Floor at 5 minutes.
- *
+ * @param {number} clinicId
  * @returns {Promise<number>} Average consultation time in minutes
  */
-async function getRollingAvgConsultTime() {
+async function getRollingAvgConsultTime(clinicId) {
   const today = new Date().toISOString().split('T')[0];
 
   const result = await query(
     `SELECT called_at, completed_at
      FROM appointments
-     WHERE appointment_date = $1
+     WHERE clinic_id = $1
+       AND appointment_date = $2
        AND status IN ('DONE', 'DISPENSED')
        AND called_at IS NOT NULL
        AND completed_at IS NOT NULL
      ORDER BY completed_at DESC
      LIMIT 5`,
-    [today]
+    [clinicId, today]
   );
 
   if (result.rows.length < 5) {
@@ -195,8 +194,6 @@ async function getRollingAvgConsultTime() {
   }
 
   const avgMinutes = totalMs / result.rows.length / (1000 * 60);
-
-  // Floor at 5 minutes
   return Math.max(5, Math.round(avgMinutes));
 }
 

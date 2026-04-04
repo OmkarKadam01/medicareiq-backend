@@ -29,7 +29,7 @@ const { getTodayQueue }              = require('./queueService');
  * @param {Array}  visitData.medicines - [{ drugId, dosage, frequency, durationDays, quantity, instructions }]
  * @returns {Promise<Object>} Created visit with prescriptions
  */
-async function createVisit(appointmentId, staffId, { chiefComplaint, doctorNotes, diagnosis, followUpDate, medicines = [] }) {
+async function createVisit(appointmentId, staffId, { chiefComplaint, doctorNotes, diagnosis, followUpDate, medicines = [] }, clinicId = 1) {
   const client = await getClient();
   try {
     await client.query('BEGIN');
@@ -67,14 +67,16 @@ async function createVisit(appointmentId, staffId, { chiefComplaint, doctorNotes
       throw createError('A visit record already exists for this appointment', 409);
     }
 
-    // Create the visit record
+    // Create the visit record (include clinic_id and doctor_id)
     const visitResult = await client.query(
-      `INSERT INTO visits (appointment_id, patient_id, attending_staff, chief_complaint, doctor_notes, diagnosis, follow_up_date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO visits (clinic_id, appointment_id, patient_id, attending_staff, doctor_id, chief_complaint, doctor_notes, diagnosis, follow_up_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
+        clinicId,
         appointmentId,
         appt.patient_id,
+        staffId,
         staffId,
         chiefComplaint || null,
         doctorNotes    || null,
@@ -103,10 +105,11 @@ async function createVisit(appointmentId, staffId, { chiefComplaint, doctorNotes
       }
 
       const prescResult = await client.query(
-        `INSERT INTO prescriptions (visit_id, drug_id, dosage, frequency, duration_days, quantity, instructions, is_dispensed)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE)
+        `INSERT INTO prescriptions (clinic_id, visit_id, drug_id, dosage, frequency, duration_days, quantity, instructions, is_dispensed)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, FALSE)
          RETURNING *`,
         [
+          clinicId,
           visit.id,
           med.drugId,
           dosage,
@@ -140,8 +143,8 @@ async function createVisit(appointmentId, staffId, { chiefComplaint, doctorNotes
       try {
         // Notify compounders via FCM
         const compounderResult = await query(
-          `SELECT fcm_token FROM staff WHERE role = 'compounder' AND is_active = TRUE AND fcm_token IS NOT NULL`,
-          []
+          `SELECT fcm_token FROM staff WHERE clinic_id = $1 AND role = 'compounder' AND is_active = TRUE AND fcm_token IS NOT NULL`,
+          [clinicId]
         );
 
         for (const compounder of compounderResult.rows) {
@@ -158,8 +161,8 @@ async function createVisit(appointmentId, staffId, { chiefComplaint, doctorNotes
           );
         }
 
-        // Broadcast prescription:ready to all clinic (compounder) connections
-        broadcastToClinic('prescription:ready', {
+        // Broadcast prescription:ready to this clinic's connections only
+        broadcastToClinic(clinicId, 'prescription:ready', {
           visitId: visit.id,
           appointmentId,
           tokenNumber: appt.token_number,
@@ -168,8 +171,8 @@ async function createVisit(appointmentId, staffId, { chiefComplaint, doctorNotes
         });
 
         // Update clinic queue display
-        const queueSnapshot = await getTodayQueue();
-        broadcastToClinic('queue:updated', { queue: queueSnapshot });
+        const queueSnapshot = await getTodayQueue(clinicId);
+        broadcastToClinic(clinicId, 'queue:updated', { queue: queueSnapshot });
 
         // Notify patient their prescription is written
         if (appt.patient_fcm) {
@@ -207,7 +210,7 @@ async function createVisit(appointmentId, staffId, { chiefComplaint, doctorNotes
  *
  * @returns {Promise<Array>}
  */
-async function getPendingDispense() {
+async function getPendingDispense(clinicId) {
   const today = new Date().toISOString().split('T')[0];
 
   const result = await query(
@@ -236,11 +239,12 @@ async function getPendingDispense() {
      JOIN patients p     ON v.patient_id = p.id
      JOIN prescriptions pr ON pr.visit_id = v.id
      JOIN drugs d        ON pr.drug_id = d.id
-     WHERE a.appointment_date = $1
+     WHERE a.clinic_id = $1
+       AND a.appointment_date = $2
        AND a.status = 'DONE'
        AND pr.is_dispensed = FALSE
      ORDER BY a.token_number ASC, pr.id ASC`,
-    [today]
+    [clinicId, today]
   );
 
   // Group by visit

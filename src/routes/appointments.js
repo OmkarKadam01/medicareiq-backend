@@ -60,7 +60,9 @@ router.get('/slots', async (req, res, next) => {
       return res.status(400).json({ error: 'Cannot check slots for past dates' });
     }
 
-    const slots = await getAvailableSlots(date);
+    // Patients book into clinic 1 by default; extend with ?clinicId= param when multi-clinic is needed
+    const clinicId = parseInt(req.query.clinicId, 10) || 1;
+    const slots = await getAvailableSlots(date, clinicId);
     // Return bare array matching patient app model: [{ slotTime, availableCount }]
     return res.status(200).json(slots);
   } catch (err) {
@@ -96,7 +98,8 @@ router.post('/', async (req, res, next) => {
       return res.status(400).json({ error: 'Cannot book appointments for past dates' });
     }
 
-    const appointment = await bookAppointment(req.patientId, date, slotTime);
+    const clinicId = parseInt(req.body.clinicId, 10) || 1;
+    const appointment = await bookAppointment(req.patientId, date, slotTime, clinicId);
 
     // Return bare camelCase object matching patient app Appointment model
     return res.status(201).json(mapAppointment(appointment));
@@ -184,7 +187,7 @@ router.delete('/:id', async (req, res, next) => {
       return res.status(400).json({ error: 'Invalid appointment ID' });
     }
 
-    const appointment = await cancelAppointment(appointmentId, req.patientId);
+    const appointment = await cancelAppointment(appointmentId, req.patientId, 1);
     return res.status(200).json({ message: 'Appointment cancelled successfully', appointment });
   } catch (err) {
     next(err);

@@ -36,8 +36,11 @@ function assertValidTransition(currentStatus, nextStatus) {
  * Ensure we have a clinic configuration; create default row if missing.
  * @returns {Promise<Object>} clinic_config row
  */
-async function getOrCreateClinicConfig() {
-  const configResult = await query('SELECT * FROM clinic_config LIMIT 1', []);
+async function getOrCreateClinicConfig(clinicId = 1) {
+  const configResult = await query(
+    'SELECT * FROM clinic_config WHERE clinic_id = $1 LIMIT 1',
+    [clinicId]
+  );
   if (configResult.rows.length > 0) {
     return configResult.rows[0];
   }
@@ -50,7 +53,6 @@ async function getOrCreateClinicConfig() {
     max_patients_per_slot: 3,
     geofence_lat: 19.01325,
     geofence_lng: 72.8482,
-
     geofence_radius_meters: 200,
     checkin_window_minutes: 30,
     is_open: true,
@@ -58,6 +60,7 @@ async function getOrCreateClinicConfig() {
 
   await query(
     `INSERT INTO clinic_config (
+      clinic_id,
       clinic_name,
       opening_time,
       closing_time,
@@ -68,9 +71,10 @@ async function getOrCreateClinicConfig() {
       geofence_radius_meters,
       checkin_window_minutes,
       is_open
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
     ON CONFLICT DO NOTHING`,
     [
+      clinicId,
       defaultConfig.clinic_name,
       defaultConfig.opening_time,
       defaultConfig.closing_time,
@@ -84,7 +88,10 @@ async function getOrCreateClinicConfig() {
     ]
   );
 
-  const created = await query('SELECT * FROM clinic_config LIMIT 1', []);
+  const created = await query(
+    'SELECT * FROM clinic_config WHERE clinic_id = $1 LIMIT 1',
+    [clinicId]
+  );
   if (created.rows.length === 0) {
     throw createError('Clinic configuration not found', 500);
   }
@@ -123,22 +130,22 @@ function generateTimeSlots(config) {
  * @param {string} date - 'YYYY-MM-DD'
  * @returns {Promise<Array<{ slotTime: string, availableCount: number }>>}
  */
-async function getAvailableSlots(date) {
-  // Fetch clinic config (creates default config if needed)
-  const config = await getOrCreateClinicConfig();
+async function getAvailableSlots(date, clinicId = 1) {
+  const config = await getOrCreateClinicConfig(clinicId);
 
   if (!config.is_open) {
     return [];
   }
 
-  // Get all active bookings for that date
+  // Get all active bookings for that date scoped to this clinic
   const bookedResult = await query(
     `SELECT slot_time, COUNT(*) as booked_count
      FROM appointments
-     WHERE appointment_date = $1
+     WHERE clinic_id = $1
+       AND appointment_date = $2
        AND status NOT IN ('CANCELLED', 'EXPIRED')
      GROUP BY slot_time`,
-    [date]
+    [clinicId, date]
   );
 
   const bookedMap = {};
@@ -183,25 +190,25 @@ async function getAvailableSlots(date) {
  * @param {string} slotTime - 'HH:MM'
  * @returns {Promise<Object>} The created appointment row
  */
-async function bookAppointment(patientId, date, slotTime) {
+async function bookAppointment(patientId, date, slotTime, clinicId = 1) {
   const client = await getClient();
   try {
     await client.query('BEGIN');
 
-    // Count existing bookings for this slot (aggregate — no FOR UPDATE)
+    // Verify slot capacity — scoped to this clinic
     const lockResult = await client.query(
       `SELECT COUNT(*) as booked_count
        FROM appointments
-       WHERE appointment_date = $1
-         AND slot_time = $2
+       WHERE clinic_id = $1
+         AND appointment_date = $2
+         AND slot_time = $3
          AND status NOT IN ('CANCELLED', 'EXPIRED')`,
-      [date, slotTime]
+      [clinicId, date, slotTime]
     );
 
     const bookedCount = parseInt(lockResult.rows[0].booked_count, 10);
 
-    // Verify slot capacity
-    const config = await getOrCreateClinicConfig();
+    const config = await getOrCreateClinicConfig(clinicId);
 
     if (!config.is_open) {
       throw createError('Clinic is currently closed', 400);
@@ -211,44 +218,47 @@ async function bookAppointment(patientId, date, slotTime) {
       throw createError('This time slot is fully booked', 409);
     }
 
-    // Check for duplicate booking: patient cannot book same date twice
-    // Exclude all terminal statuses so completed/skipped appointments don't block rebooking
+    // Check for duplicate booking scoped to this clinic
     const duplicateResult = await client.query(
       `SELECT id FROM appointments
-       WHERE patient_id = $1
-         AND appointment_date = $2
+       WHERE clinic_id = $1
+         AND patient_id = $2
+         AND appointment_date = $3
          AND status NOT IN ('CANCELLED', 'EXPIRED', 'DONE', 'DISPENSED', 'SKIPPED')
        LIMIT 1`,
-      [patientId, date]
+      [clinicId, patientId, date]
     );
 
     if (duplicateResult.rows.length > 0) {
       throw createError('You already have an active appointment on this date', 409);
     }
 
-    // Assign token number: MAX + 1 for this date (aggregate — no FOR UPDATE)
+    // Atomic token assignment — avoids MAX+1 race condition.
+    // UPSERT into token_counters then increment atomically.
     const tokenResult = await client.query(
-      `SELECT COALESCE(MAX(token_number), 0) + 1 AS next_token
-       FROM appointments
-       WHERE appointment_date = $1`,
-      [date]
+      `INSERT INTO token_counters (clinic_id, date, last_token)
+       VALUES ($1, $2, 1)
+       ON CONFLICT (clinic_id, date) DO UPDATE
+         SET last_token = token_counters.last_token + 1
+       RETURNING last_token`,
+      [clinicId, date]
     );
 
-    const tokenNumber = parseInt(tokenResult.rows[0].next_token, 10);
+    const tokenNumber = parseInt(tokenResult.rows[0].last_token, 10);
 
     // Insert the appointment
     const insertResult = await client.query(
-      `INSERT INTO appointments (patient_id, appointment_date, slot_time, token_number, status)
-       VALUES ($1, $2, $3, $4, 'BOOKED')
+      `INSERT INTO appointments (clinic_id, patient_id, appointment_date, slot_time, token_number, status)
+       VALUES ($1, $2, $3, $4, $5, 'BOOKED')
        RETURNING *`,
-      [patientId, date, slotTime, tokenNumber]
+      [clinicId, patientId, date, slotTime, tokenNumber]
     );
 
     await client.query('COMMIT');
 
     const appointment = insertResult.rows[0];
     console.log(
-      `[Appointment] Booked: patient=${patientId}, date=${date}, slot=${slotTime}, token=${tokenNumber}`
+      `[Appointment] Booked: clinic=${clinicId}, patient=${patientId}, date=${date}, slot=${slotTime}, token=${tokenNumber}`
     );
     return appointment;
   } catch (err) {
@@ -267,13 +277,13 @@ async function bookAppointment(patientId, date, slotTime) {
  * @param {number} patientId - Must match appointment's patient_id
  * @returns {Promise<Object>} Updated appointment row
  */
-async function cancelAppointment(appointmentId, patientId) {
-  // Fetch the appointment
+async function cancelAppointment(appointmentId, patientId, clinicId = 1) {
   const result = await query(
     `SELECT a.*, cc.checkin_window_minutes
-     FROM appointments a, clinic_config cc
-     WHERE a.id = $1`,
-    [appointmentId]
+     FROM appointments a
+     JOIN clinic_config cc ON cc.clinic_id = a.clinic_id
+     WHERE a.id = $1 AND a.clinic_id = $2`,
+    [appointmentId, clinicId]
   );
 
   if (result.rows.length === 0) {
@@ -376,42 +386,43 @@ async function getQueueStatus(appointmentId, patientId) {
 
   const dateStr = appt.appointment_date.toISOString().split('T')[0];
 
-  // Count patients ahead in queue (CHECKED_IN with lower token number, plus IN_CONSULTATION)
+  const clinicId = appt.clinic_id;
+
+  // Count patients ahead in queue scoped to this clinic
   const aheadResult = await query(
     `SELECT COUNT(*) as tokens_ahead
      FROM appointments
-     WHERE appointment_date = $1
+     WHERE clinic_id = $1
+       AND appointment_date = $2
        AND status IN ('CHECKED_IN', 'IN_CONSULTATION')
-       AND token_number < $2`,
-    [dateStr, appt.token_number]
+       AND token_number < $3`,
+    [clinicId, dateStr, appt.token_number]
   );
 
-  // Also count if there's currently someone IN_CONSULTATION
   const inConsultResult = await query(
     `SELECT COUNT(*) as in_consult
      FROM appointments
-     WHERE appointment_date = $1
+     WHERE clinic_id = $1
+       AND appointment_date = $2
        AND status = 'IN_CONSULTATION'`,
-    [dateStr]
+    [clinicId, dateStr]
   );
 
   const tokensAhead = parseInt(aheadResult.rows[0].tokens_ahead, 10);
   const inConsult   = parseInt(inConsultResult.rows[0].in_consult, 10);
 
-  // Import queueService lazily to avoid circular dependency
   const { getRollingAvgConsultTime } = require('./queueService');
-  const avgConsultMin = await getRollingAvgConsultTime();
+  const avgConsultMin = await getRollingAvgConsultTime(clinicId);
 
-  // Total wait = (people ahead + current in consultation) * avg consult time
   const estimatedWaitMins = Math.round((tokensAhead + inConsult) * avgConsultMin);
 
-  // Get the token currently being served (IN_CONSULTATION)
   const currentTokenResult = await query(
     `SELECT COALESCE(MAX(token_number), 0) AS current_token
      FROM appointments
-     WHERE appointment_date = $1
+     WHERE clinic_id = $1
+       AND appointment_date = $2
        AND status = 'IN_CONSULTATION'`,
-    [dateStr]
+    [clinicId, dateStr]
   );
   const currentToken = parseInt(currentTokenResult.rows[0].current_token, 10);
 
@@ -435,12 +446,13 @@ async function getQueueStatus(appointmentId, patientId) {
  * @returns {Promise<number>} Number of appointments expired
  */
 async function expireOldAppointments() {
+  // clinic_id-agnostic: expires across all clinics (cron job context)
   const result = await query(
     `UPDATE appointments
      SET status = 'EXPIRED'
      WHERE status IN ('BOOKED', 'CHECK_IN_WINDOW')
        AND (appointment_date + slot_time::interval) < NOW() - INTERVAL '5 minutes'
-     RETURNING id`,
+     RETURNING id, clinic_id`,
     []
   );
 

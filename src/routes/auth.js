@@ -81,7 +81,7 @@ router.post('/staff/login', authLimiter, async (req, res, next) => {
 
     // Fetch staff member
     const result = await query(
-      `SELECT id, username, password_hash, name, role, is_active
+      `SELECT id, username, password_hash, name, role, is_active, clinic_id
        FROM staff
        WHERE username = $1`,
       [username]
@@ -111,16 +111,17 @@ router.post('/staff/login', authLimiter, async (req, res, next) => {
       );
     }
 
-    const tokens = generateTokens({ id: staff.id, type: 'staff', role: staff.role });
+    const tokens = generateTokens({ id: staff.id, type: 'staff', role: staff.role, clinicId: staff.clinic_id });
 
-    console.log(`[Auth] Staff login: id=${staff.id}, username=${staff.username}, role=${staff.role}`);
+    console.log(`[Auth] Staff login: id=${staff.id}, username=${staff.username}, role=${staff.role}, clinic=${staff.clinic_id}`);
 
     return res.status(200).json({
       staff: {
-        id:   staff.id,
+        id:       staff.id,
         username: staff.username,
-        name: staff.name,
-        role: staff.role,
+        name:     staff.name,
+        role:     staff.role,
+        clinicId: staff.clinic_id,
       },
       ...tokens,
     });

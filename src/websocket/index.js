@@ -5,25 +5,30 @@ const { URL } = require('url');
 const { verifyAccessToken } = require('../services/authService');
 
 /**
- * Connected clients map.
+ * Per-clinic staff connections: clinicId (string) -> Set of { ws, key }
+ * Allows O(staff_in_clinic) broadcast instead of O(all_clients).
+ */
+const clinicRooms = new Map();
+
+/**
+ * Per-patient connections: patientId (string) -> Set of { ws, key }
+ */
+const patientRooms = new Map();
+
+/**
+ * Full client map for lifecycle management (ping, cleanup).
  * Key: unique client key string
- * Value: { ws, identity: { type: 'patient'|'staff', id, role? } }
+ * Value: { ws, identity: { type, id, role?, clinicId? } }
  */
 const clients = new Map();
 
 let clientIdCounter = 0;
 let wss = null;
 
-/**
- * Serialize a WebSocket message to JSON string.
- */
 function buildMessage(event, payload) {
   return JSON.stringify({ event, payload, timestamp: new Date().toISOString() });
 }
 
-/**
- * Send a message to a single WebSocket connection, safely.
- */
 function safeSend(ws, message) {
   if (ws.readyState === WebSocket.OPEN) {
     try {
@@ -35,45 +40,49 @@ function safeSend(ws, message) {
 }
 
 /**
- * Broadcast an event to all connected clinic staff clients.
- * @param {string} event
- * @param {Object} payload
+ * Broadcast an event to all staff connected to a specific clinic.
+ * O(staff_in_clinic) — not O(all_clients).
+ *
+ * @param {number|string} clinicId
+ * @param {string}        event
+ * @param {Object}        payload
  */
-function broadcastToClinic(event, payload) {
+function broadcastToClinic(clinicId, event, payload) {
   const message = buildMessage(event, payload);
-  let count = 0;
-  for (const [, client] of clients) {
-    if (client.identity.type === 'staff') {
-      safeSend(client.ws, message);
-      count++;
-    }
+  const room = clinicRooms.get(String(clinicId));
+  if (!room || room.size === 0) {
+    console.log(`[WS] broadcastToClinic(${clinicId}) '${event}' → 0 clients (empty room)`);
+    return;
   }
-  console.log(`[WS] broadcastToClinic '${event}' → ${count} clinic clients`);
+  let count = 0;
+  for (const { ws } of room) {
+    safeSend(ws, message);
+    count++;
+  }
+  console.log(`[WS] broadcastToClinic(${clinicId}) '${event}' → ${count} clients`);
 }
 
 /**
  * Broadcast an event to a specific patient's connected devices.
+ *
  * @param {number|string} patientId
  * @param {string}        event
  * @param {Object}        payload
  */
 function broadcastToPatient(patientId, event, payload) {
   const message = buildMessage(event, payload);
-  const targetId = String(patientId);
+  const room = patientRooms.get(String(patientId));
+  if (!room || room.size === 0) return;
   let count = 0;
-  for (const [, client] of clients) {
-    if (client.identity.type === 'patient' && String(client.identity.id) === targetId) {
-      safeSend(client.ws, message);
-      count++;
-    }
+  for (const { ws } of room) {
+    safeSend(ws, message);
+    count++;
   }
   console.log(`[WS] broadcastToPatient(${patientId}) '${event}' → ${count} connections`);
 }
 
 /**
- * Broadcast an event to ALL connected clients.
- * @param {string} event
- * @param {Object} payload
+ * Broadcast an event to ALL connected clients (admin use).
  */
 function broadcastAll(event, payload) {
   const message = buildMessage(event, payload);
@@ -86,19 +95,46 @@ function broadcastAll(event, payload) {
 }
 
 /**
- * Authenticate and register a new WebSocket connection.
- * Expects JWT via query param: ws://host/ws?token=xxx
- *
- * On authentication failure, closes the connection with code 4001.
- *
- * @param {WebSocket} ws
- * @param {import('http').IncomingMessage} req
+ * Register a client into the appropriate room.
  */
+function joinRoom(clientKey, ws, identity) {
+  if (identity.type === 'staff' && identity.clinicId) {
+    const roomKey = String(identity.clinicId);
+    if (!clinicRooms.has(roomKey)) clinicRooms.set(roomKey, new Set());
+    clinicRooms.get(roomKey).add({ ws, key: clientKey });
+  } else if (identity.type === 'patient') {
+    const roomKey = String(identity.id);
+    if (!patientRooms.has(roomKey)) patientRooms.set(roomKey, new Set());
+    patientRooms.get(roomKey).add({ ws, key: clientKey });
+  }
+}
+
+/**
+ * Remove a client from its room on disconnect.
+ */
+function leaveRoom(clientKey, identity) {
+  if (identity.type === 'staff' && identity.clinicId) {
+    const room = clinicRooms.get(String(identity.clinicId));
+    if (room) {
+      for (const entry of room) {
+        if (entry.key === clientKey) { room.delete(entry); break; }
+      }
+      if (room.size === 0) clinicRooms.delete(String(identity.clinicId));
+    }
+  } else if (identity.type === 'patient') {
+    const room = patientRooms.get(String(identity.id));
+    if (room) {
+      for (const entry of room) {
+        if (entry.key === clientKey) { room.delete(entry); break; }
+      }
+      if (room.size === 0) patientRooms.delete(String(identity.id));
+    }
+  }
+}
+
 async function handleConnection(ws, req) {
   let token;
-
   try {
-    // Parse query params from the upgrade request URL
     const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
     token = parsedUrl.searchParams.get('token');
   } catch {
@@ -122,27 +158,23 @@ async function handleConnection(ws, req) {
     return;
   }
 
-  // Build identity object
+  // Build identity — include clinicId for staff so room routing works
   const identity =
     decoded.type === 'staff'
-      ? { type: 'staff', id: decoded.id, role: decoded.role }
+      ? { type: 'staff', id: decoded.id, role: decoded.role, clinicId: decoded.clinicId ?? 1 }
       : { type: 'patient', id: decoded.id };
 
   const clientKey = `${identity.type}:${identity.id}:${++clientIdCounter}`;
   clients.set(clientKey, { ws, identity });
+  joinRoom(clientKey, ws, identity);
 
-  console.log(`[WS] Client connected: ${clientKey} (total: ${clients.size})`);
+  console.log(`[WS] Client connected: ${clientKey} (clinic:${identity.clinicId ?? 'n/a'}, total: ${clients.size})`);
 
-  // Send welcome/ack
   safeSend(ws, buildMessage('connection:ack', { clientKey, identity }));
 
-  // Handle incoming messages from the client
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
-      console.log(`[WS] Message from ${clientKey}:`, msg.event);
-
-      // Handle ping/pong keepalive
       if (msg.event === 'ping') {
         safeSend(ws, buildMessage('pong', { time: Date.now() }));
       }
@@ -151,29 +183,23 @@ async function handleConnection(ws, req) {
     }
   });
 
-  // Handle disconnection
-  ws.on('close', (code, reason) => {
+  ws.on('close', (code) => {
     clients.delete(clientKey);
-    console.log(
-      `[WS] Client disconnected: ${clientKey} (code: ${code}, remaining: ${clients.size})`
-    );
+    leaveRoom(clientKey, identity);
+    console.log(`[WS] Client disconnected: ${clientKey} (code: ${code}, remaining: ${clients.size})`);
   });
 
   ws.on('error', (err) => {
     console.error(`[WS] Error from ${clientKey}:`, err.message);
     clients.delete(clientKey);
+    leaveRoom(clientKey, identity);
   });
 }
 
-/**
- * Set up the WebSocket server attached to an existing HTTP server.
- * @param {import('http').Server} server
- */
 function setupWebSocket(server) {
   wss = new WebSocketServer({ server, path: '/ws' });
 
   wss.on('connection', handleConnection);
-
   wss.on('error', (err) => {
     console.error('[WS] Server error:', err.message);
   });
@@ -182,12 +208,14 @@ function setupWebSocket(server) {
   const heartbeatInterval = setInterval(() => {
     for (const [key, client] of clients) {
       if (client.ws.readyState !== WebSocket.OPEN) {
+        leaveRoom(key, client.identity);
         clients.delete(key);
         continue;
       }
       try {
         client.ws.ping();
       } catch {
+        leaveRoom(key, client.identity);
         clients.delete(key);
       }
     }
@@ -201,9 +229,6 @@ function setupWebSocket(server) {
   return wss;
 }
 
-/**
- * Get current connected client count (for monitoring).
- */
 function getConnectedClientCount() {
   return clients.size;
 }

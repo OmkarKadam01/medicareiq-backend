@@ -55,7 +55,8 @@ router.post('/', requireRole('doctor', 'admin'), async (req, res, next) => {
         diagnosis,
         followUpDate: followUpDate || null,
         medicines,
-      }
+      },
+      req.clinicId
     );
 
     return res.status(201).json({
@@ -85,9 +86,10 @@ router.get('/by-appointment/:appointmentId', async (req, res, next) => {
       `SELECT v.id, v.appointment_id, v.patient_id, v.chief_complaint,
               v.doctor_notes, v.created_at
        FROM visits v
-       WHERE v.appointment_id = $1
+       JOIN appointments a ON v.appointment_id = a.id
+       WHERE v.appointment_id = $1 AND a.clinic_id = $2
        LIMIT 1`,
-      [appointmentId]
+      [appointmentId, req.clinicId]
     );
 
     if (visitResult.rows.length === 0) {
@@ -168,8 +170,8 @@ router.get('/:visitId', async (req, res, next) => {
        JOIN patients p     ON v.patient_id = p.id
        LEFT JOIN staff s   ON v.attending_staff = s.id
        JOIN appointments a ON v.appointment_id = a.id
-       WHERE v.id = $1`,
-      [visitId]
+       WHERE v.id = $1 AND v.clinic_id = $2`,
+      [visitId, req.clinicId]
     );
 
     if (visitResult.rows.length === 0) {
