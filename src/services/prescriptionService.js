@@ -315,7 +315,8 @@ async function dispenseVisit(visitId, dispensedItems = []) {
       );
     }
 
-    // Mark specified prescriptions as dispensed (idempotent)
+    // Mark prescriptions as dispensed (idempotent)
+    // Empty array = dispense ALL pending; specific IDs = dispense only those
     if (dispensedItems.length > 0) {
       await client.query(
         `UPDATE prescriptions
@@ -324,6 +325,13 @@ async function dispenseVisit(visitId, dispensedItems = []) {
            AND id = ANY($2::int[])
            AND is_dispensed = FALSE`,
         [visitId, dispensedItems]
+      );
+    } else {
+      await client.query(
+        `UPDATE prescriptions
+         SET is_dispensed = TRUE, dispensed_at = NOW()
+         WHERE visit_id = $1 AND is_dispensed = FALSE`,
+        [visitId]
       );
     }
 
