@@ -33,6 +33,9 @@ async function validateCheckin(appointmentId, patientId, lat, lng) {
     throw createError('Invalid coordinates: lat must be -90 to 90, lng must be -180 to 180', 400);
   }
 
+  // Manual override: lat=0 & lng=0 bypasses geofence + timing checks (for testing)
+  const isManualOverride = (lat === 0 && lng === 0);
+
   // Fetch appointment + clinic config in one query
   const result = await query(
     `SELECT
@@ -78,48 +81,51 @@ async function validateCheckin(appointmentId, patientId, lat, lng) {
     assertValidTransition(appt.status, 'CHECKED_IN'); // Will throw descriptive error
   }
 
-  // Verify timing window
+  // Verify timing window (skipped for manual override)
   const dateStr      = appt.appointment_date.toISOString().split('T')[0];
-  const slotDateTime = new Date(`${dateStr}T${appt.slot_time}`);
-  const now          = new Date();
 
-  const windowOpenMs  = appt.checkin_window_minutes * 60 * 1000;
-  const windowCloseMs = 15 * 60 * 1000; // Allow check-in up to 15 min after slot
+  if (!isManualOverride) {
+    const slotDateTime = new Date(`${dateStr}T${appt.slot_time}`);
+    const now          = new Date();
 
-  const windowStart = new Date(slotDateTime.getTime() - windowOpenMs);
-  const windowEnd   = new Date(slotDateTime.getTime() + windowCloseMs);
+    const windowOpenMs  = appt.checkin_window_minutes * 60 * 1000;
+    const windowCloseMs = 15 * 60 * 1000; // Allow check-in up to 15 min after slot
 
-  if (now < windowStart) {
-    const minutesUntilOpen = Math.round((windowStart - now) / (1000 * 60));
-    throw createError(
-      `Check-in window opens in ${minutesUntilOpen} minute(s). ` +
-      `You can check in from ${windowStart.toLocaleTimeString()}.`,
-      400
-    );
-  }
+    const windowStart = new Date(slotDateTime.getTime() - windowOpenMs);
+    const windowEnd   = new Date(slotDateTime.getTime() + windowCloseMs);
 
-  if (now > windowEnd) {
-    throw createError(
-      'Check-in window has closed for this slot. The appointment may have expired.',
-      400
-    );
-  }
+    if (now < windowStart) {
+      const minutesUntilOpen = Math.round((windowStart - now) / (1000 * 60));
+      throw createError(
+        `Check-in window opens in ${minutesUntilOpen} minute(s). ` +
+        `You can check in from ${windowStart.toLocaleTimeString()}.`,
+        400
+      );
+    }
 
-  // Verify geofence: distance must be ≤ radius * 1.5 (50% tolerance for GPS inaccuracy)
-  const clinicLat    = parseFloat(appt.geofence_lat);
-  const clinicLng    = parseFloat(appt.geofence_lng);
-  const radiusMeters = appt.geofence_radius_meters;
-  const maxDistance  = radiusMeters * 1.5;
+    if (now > windowEnd) {
+      throw createError(
+        'Check-in window has closed for this slot. The appointment may have expired.',
+        400
+      );
+    }
 
-  const distanceMeters = haversineDistance(lat, lng, clinicLat, clinicLng);
+    // Verify geofence: distance must be ≤ radius * 1.5 (50% tolerance for GPS inaccuracy)
+    const clinicLat    = parseFloat(appt.geofence_lat);
+    const clinicLng    = parseFloat(appt.geofence_lng);
+    const radiusMeters = appt.geofence_radius_meters;
+    const maxDistance  = radiusMeters * 1.5;
 
-  if (distanceMeters > maxDistance) {
-    throw createError(
-      `You are too far from the clinic to check in. ` +
-      `You are ${Math.round(distanceMeters)}m away. ` +
-      `Maximum allowed distance: ${Math.round(maxDistance)}m.`,
-      400
-    );
+    const distanceMeters = haversineDistance(lat, lng, clinicLat, clinicLng);
+
+    if (distanceMeters > maxDistance) {
+      throw createError(
+        `You are too far from the clinic to check in. ` +
+        `You are ${Math.round(distanceMeters)}m away. ` +
+        `Maximum allowed distance: ${Math.round(maxDistance)}m.`,
+        400
+      );
+    }
   }
 
   // All checks passed — update status to CHECKED_IN
@@ -140,21 +146,19 @@ async function validateCheckin(appointmentId, patientId, lat, lng) {
   // Confirm to patient
   broadcastToPatient(patientId, 'checkin:confirmed', {
     appointmentId,
-    tokenNumber:  appt.token_number,
-    distanceMeters: Math.round(distanceMeters),
-    message:      'Check-in successful! Please wait for your token to be called.',
+    tokenNumber: appt.token_number,
+    message:     'Check-in successful! Please wait for your token to be called.',
   });
 
-  console.log(
-    `[Geofence] Patient ${patientId} checked in for appointment ${appointmentId}. ` +
-    `Distance: ${Math.round(distanceMeters)}m / ${Math.round(maxDistance)}m allowed.`
-  );
+  if (isManualOverride) {
+    console.log(`[Geofence] Patient ${patientId} manually checked in for appointment ${appointmentId} (override).`);
+  } else {
+    console.log(`[Geofence] Patient ${patientId} checked in for appointment ${appointmentId}.`);
+  }
 
   return {
     success: true,
     appointment: updatedAppt,
-    distanceMeters: Math.round(distanceMeters),
-    maxAllowedMeters: Math.round(maxDistance),
   };
 }
 

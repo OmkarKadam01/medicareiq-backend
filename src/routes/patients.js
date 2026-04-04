@@ -110,6 +110,7 @@ router.get('/me/history', authenticatePatient, apiLimiter, async (req, res, next
          a.status         AS appointment_status,
          s.name           AS doctor_name,
          pr.id            AS prescription_id,
+         pr.drug_id       AS prescription_drug_id,
          pr.dosage,
          pr.frequency,
          pr.duration_days,
@@ -133,14 +134,14 @@ router.get('/me/history', authenticatePatient, apiLimiter, async (req, res, next
     for (const row of result.rows) {
       if (!visitsMap.has(row.visit_id)) {
         visitsMap.set(row.visit_id, {
-          visitId:          row.visit_id,
-          visitDate:        row.visit_date,
+          visitId:          String(row.visit_id),
+          visitedAt:        row.visit_date,
           chiefComplaint:   row.chief_complaint,
           doctorNotes:      row.doctor_notes,
           diagnosis:        row.diagnosis,
           followUpDate:     row.follow_up_date,
           doctorName:       row.doctor_name,
-          appointmentId:    row.appointment_id,
+          appointmentId:    String(row.appointment_id),
           appointmentDate:  row.appointment_date,
           slotTime:         row.slot_time,
           tokenNumber:      row.token_number,
@@ -150,20 +151,19 @@ router.get('/me/history', authenticatePatient, apiLimiter, async (req, res, next
 
       if (row.prescription_id) {
         visitsMap.get(row.visit_id).prescriptions.push({
-          id:          row.prescription_id,
-          drugName:    row.drug_name,
-          drugUnit:    row.drug_unit,
-          dosage:      row.dosage,
-          frequency:   row.frequency,
+          id:           String(row.prescription_id),
+          drugId:       String(row.prescription_drug_id),
+          drugName:     row.drug_name,
+          dose:         row.dosage,
+          frequency:    row.frequency,
           durationDays: row.duration_days,
-          quantity:    row.quantity,
           instructions: row.instructions,
-          isDispensed: row.is_dispensed,
+          dispensed:    row.is_dispensed,
         });
       }
     }
 
-    return res.status(200).json({ history: Array.from(visitsMap.values()) });
+    return res.status(200).json(Array.from(visitsMap.values()));
   } catch (err) {
     next(err);
   }
@@ -206,6 +206,7 @@ router.get('/:id/history', authenticateStaff, apiLimiter, async (req, res, next)
          a.status         AS appointment_status,
          s.name           AS doctor_name,
          pr.id            AS prescription_id,
+         pr.drug_id       AS prescription_drug_id,
          pr.dosage,
          pr.frequency,
          pr.duration_days,
@@ -228,8 +229,8 @@ router.get('/:id/history', authenticateStaff, apiLimiter, async (req, res, next)
     for (const row of result.rows) {
       if (!visitsMap.has(row.visit_id)) {
         visitsMap.set(row.visit_id, {
-          visitId:         row.visit_id,
-          visitDate:       row.visit_date,
+          visitId:         String(row.visit_id),
+          visitedAt:       row.visit_date,
           chiefComplaint:  row.chief_complaint,
           doctorNotes:     row.doctor_notes,
           diagnosis:       row.diagnosis,
@@ -243,15 +244,14 @@ router.get('/:id/history', authenticateStaff, apiLimiter, async (req, res, next)
 
       if (row.prescription_id) {
         visitsMap.get(row.visit_id).prescriptions.push({
-          id:          row.prescription_id,
-          drugName:    row.drug_name,
-          drugUnit:    row.drug_unit,
-          dosage:      row.dosage,
-          frequency:   row.frequency,
+          id:           String(row.prescription_id),
+          drugId:       String(row.prescription_drug_id),
+          drugName:     row.drug_name,
+          dose:         row.dosage,
+          frequency:    row.frequency,
           durationDays: row.duration_days,
-          quantity:    row.quantity,
           instructions: row.instructions,
-          isDispensed: row.is_dispensed,
+          dispensed:    row.is_dispensed,
         });
       }
     }

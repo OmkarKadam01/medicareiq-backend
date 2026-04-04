@@ -402,7 +402,17 @@ async function getQueueStatus(appointmentId, patientId) {
   const avgConsultMin = await getRollingAvgConsultTime();
 
   // Total wait = (people ahead + current in consultation) * avg consult time
-  const estimatedWaitMinutes = Math.round((tokensAhead + inConsult) * avgConsultMin);
+  const estimatedWaitMins = Math.round((tokensAhead + inConsult) * avgConsultMin);
+
+  // Get the token currently being served (IN_CONSULTATION)
+  const currentTokenResult = await query(
+    `SELECT COALESCE(MAX(token_number), 0) AS current_token
+     FROM appointments
+     WHERE appointment_date = $1
+       AND status = 'IN_CONSULTATION'`,
+    [dateStr]
+  );
+  const currentToken = parseInt(currentTokenResult.rows[0].current_token, 10);
 
   return {
     appointmentId,
@@ -410,8 +420,9 @@ async function getQueueStatus(appointmentId, patientId) {
     status:        appt.status,
     position:      tokensAhead + 1,
     tokensAhead,
-    estimatedWaitMinutes,
-    avgConsultMinutes: avgConsultMin,
+    currentToken,
+    estimatedWaitMins,
+    avgConsultMins: avgConsultMin,
   };
 }
 
